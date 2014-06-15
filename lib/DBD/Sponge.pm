@@ -91,12 +91,13 @@
 		    || [ map { "col$_" } 1..$numFields ];
 	    $sth->{TYPE} = $attribs->{TYPE}
 		    || [ (DBI::SQL_VARCHAR()) x $numFields ];
-	    $sth->{PRECISION} = $attribs->{PRECISION}
-		    || _max_columnar_lengths($numFields, $rows);
 	    $sth->{SCALE} = $attribs->{SCALE}
 		    || [ (0) x $numFields ];
 	    $sth->{NULLABLE} = $attribs->{NULLABLE}
 		    || [ (2) x $numFields ];
+	    if ($attribs->{PRECISION}) {
+		    $sth->{PRECISION} = $attribs->{PRECISION};
+	    } # else FETCH will dynamically compute
 	}
 
 	$outer;
@@ -153,18 +154,6 @@
 	return \@args;
     }
 
-    sub _max_columnar_lengths {
-	my ($numFields, $rows) = @_;
-	my @precision = (0,) x $numFields;
-	my $len;
-	for my $row (@$rows) {
-	    for my $i (0 .. $numFields - 1) {
-		next unless defined $len = length($row->[$i]);
-		$precision[$i] = $len if $len > $precision[$i];
-	    }
-	}
-	return wantarray ? @precision : \@precision;
-    }
 }
 
 
@@ -212,6 +201,10 @@
     sub FETCH {
 	my ($sth, $attrib) = @_;
 	# would normally validate and only fetch known attributes
+	if ($attrib eq 'PRECISION') {
+	    # prepare() did _not_ specify PRECISION.  We'll only get here once.
+	    return $sth->{PRECISION} = _max_col_lengths(@{$sth}{'NUM_OF_FIELDS', 'rows'});
+	}
 	# else pass up to DBI to handle
 	return $sth->SUPER::FETCH($attrib);
     }
@@ -221,6 +214,19 @@
 	# would normally validate and only store known attributes
 	# else pass up to DBI to handle
 	return $sth->SUPER::STORE($attrib, $value);
+    }
+
+    sub _max_col_lengths {
+	my ($numFields, $rows) = @_;
+	my @precision = (0,) x $numFields;
+	my $len;
+	for my $row (@$rows) {
+	    for my $i (0 .. $numFields - 1) {
+		next unless defined($len = length($row->[$i]));
+		$precision[$i] = $len if $len > $precision[$i];
+	    }
+	}
+	return wantarray ? @precision : \@precision;
     }
 }
 
