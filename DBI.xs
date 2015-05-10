@@ -2900,7 +2900,7 @@ dbi_profile(SV *h, imp_xxh_t *imp_xxh, SV *statement_sv, SV *method, NV t1, NV t
                 PUSHs( sv_2mortal(newSVpv(method_pv,0)));
                 PUTBACK;
                 SAVE_DEFSV; /* local($_) = $statement */
-                DEFSV = statement_sv;
+                DEFSV_set(statement_sv);
                 items = call_sv(code_sv, G_ARRAY);
                 SPAGAIN;
                 SP -= items ;
@@ -3147,6 +3147,7 @@ XS(XS_DBI_dispatch);            /* prototype to pass -Wmissing-prototypes */
 XS(XS_DBI_dispatch)
 {
     dXSARGS;
+    dORIGMARK;
     dMY_CXT;
 
     SV *h   = ST(0);            /* the DBI handle we are working with   */
@@ -3447,6 +3448,7 @@ XS(XS_DBI_dispatch)
                     XPUSHs(*hp);
                     PUTBACK;
                     call_method("DESTROY", G_DISCARD|G_EVAL|G_KEEPERR);
+                    MSPAGAIN;
                 }
                 else {
                     imp_xxh_t *imp_xxh = dbih_getcom2(aTHX_ *hp, 0);
@@ -3539,8 +3541,8 @@ XS(XS_DBI_dispatch)
         SV *code = SvRV(*hook_svp);
         I32 skip_dispatch = 0;
         if (trace_level)
-            PerlIO_printf(DBILOGFP, "%c   {{ %s callback %s being invoked\n",
-                (PL_dirty?'!':' '), meth_name, neatsvpv(*hook_svp,0));
+            PerlIO_printf(DBILOGFP, "%c   {{ %s callback %s being invoked with %ld args\n",
+                (PL_dirty?'!':' '), meth_name, neatsvpv(*hook_svp,0), (long)items);
 
         /* we don't use ENTER,SAVETMPS & FREETMPS,LEAVE because we may need mortal
          * results to live long enough to be returned to our caller
@@ -3552,7 +3554,7 @@ XS(XS_DBI_dispatch)
          */
         orig_defsv = DEFSV; /* remember the current $_ */
         SAVE_DEFSV;         /* local($_) = $method_name */
-        DEFSV = sv_2mortal(newSVpv(meth_name,0));
+        DEFSV_set(sv_2mortal(newSVpv(meth_name,0)));
 
         EXTEND(SP, items+1);
         PUSHMARK(SP);
@@ -3562,14 +3564,14 @@ XS(XS_DBI_dispatch)
         }
         PUTBACK;
         outitems = call_sv(code, G_ARRAY); /* call the callback code */
-        SPAGAIN;
+        MSPAGAIN;
 
         /* The callback code can undef $_ to indicate to skip dispatch */
         skip_dispatch = !SvOK(DEFSV);
         /* put $_ back now, but with an incremented ref count to compensate
          * for the ref count decrement that will happen when we exit the scope.
          */
-        DEFSV = SvREFCNT_inc(orig_defsv);
+        DEFSV_set(SvREFCNT_inc(orig_defsv));
 
         if (trace_level)
             PerlIO_printf(DBILOGFP, "%c   }} %s callback %s returned%s\n",
@@ -3890,7 +3892,7 @@ XS(XS_DBI_dispatch)
                 XPUSHs(&PL_sv_yes);
                 PUTBACK;
                 call_method("STORE", G_DISCARD);
-                SPAGAIN;
+                MSPAGAIN;
             }
         }
     }
@@ -4047,7 +4049,7 @@ XS(XS_DBI_dispatch)
             XPUSHs( result );
             PUTBACK;
             items = call_sv(*hook_svp, G_SCALAR);
-            SPAGAIN;
+            MSPAGAIN;
             status = (items) ? POPs : &PL_sv_undef;
             PUTBACK;
             if (trace_level)
@@ -4155,7 +4157,7 @@ preparse(SV *dbh, const char *statement, IV ps_return, IV ps_accept, void *foo)
     char rt_comment = '\0';
     char *dest, *start;
     const char *src;
-    const char *style = "", *laststyle = '\0';
+    const char *style = "", *laststyle = NULL;
     SV *new_stmt_sv;
 
     (void)foo;
@@ -5443,6 +5445,19 @@ FETCH(h, keysv)
     SV *        keysv
     CODE:
     ST(0) = dbih_get_attr_k(h, keysv, 0);
+    (void)cv;
+
+void
+DELETE(h, keysv)
+    SV *        h
+    SV *        keysv
+    CODE:
+    /* only private_* keys can be deleted, for others DELETE acts like FETCH */
+    /* because the DBI internals rely on certain handle attributes existing  */
+    if (strnEQ(SvPV_nolen(keysv),"private_",8))
+        ST(0) = hv_delete_ent((HV*)SvRV(h), keysv, 0, 0);
+    else
+        ST(0) = dbih_get_attr_k(h, keysv, 0);
     (void)cv;
 
 

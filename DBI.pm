@@ -11,7 +11,7 @@ package DBI;
 require 5.008_001;
 
 BEGIN {
-our $XS_VERSION = our $VERSION = "1.631"; # ==> ALSO update the version in the pod text below!
+our $XS_VERSION = our $VERSION = "1.633"; # ==> ALSO update the version in the pod text below!
 $VERSION = eval $VERSION;
 }
 
@@ -144,7 +144,7 @@ sure that your issue isn't related to the driver you're using.
 
 =head2 NOTES
 
-This is the DBI specification that corresponds to DBI version 1.631
+This is the DBI specification that corresponds to DBI version 1.633
 (see L<DBI::Changes> for details).
 
 The DBI is evolving at a steady pace, so it's good to check that
@@ -328,6 +328,7 @@ sub DBI::var::STORE    { Carp::croak("Can't modify \$DBI::${$_[0]} special varia
 
 my $dbd_prefix_registry = {
   ad_          => { class => 'DBD::AnyData',        },
+  ad2_         => { class => 'DBD::AnyData2',       },
   ado_         => { class => 'DBD::ADO',            },
   amzn_        => { class => 'DBD::Amazon',         },
   best_        => { class => 'DBD::BestWins',       },
@@ -350,6 +351,7 @@ my $dbd_prefix_registry = {
   msql_        => { class => 'DBD::mSQL',           },
   mvsftp_      => { class => 'DBD::MVS_FTPSQL',     },
   mysql_       => { class => 'DBD::mysql',          },
+  multi_       => { class => 'DBD::Multi'           },
   mx_          => { class => 'DBD::Multiplex',      },
   neo_         => { class => 'DBD::Neo4p',          },
   nullp_       => { class => 'DBD::NullP',          },
@@ -411,6 +413,7 @@ my $keeperr = { O=>0x0004 };
 	'FIRSTKEY'	=> $keeperr,
 	'NEXTKEY'	=> $keeperr,
 	'STORE'		=> { O=>0x0418 | 0x4 },
+	'DELETE'	=> { O=>0x0404 },
 	can		=> { O=>0x0100 }, # special case, see dispatch
 	debug 	 	=> { U =>[1,2,'[$debug_level]'],	O=>0x0004 }, # old name for trace
 	dump_handle 	=> { U =>[1,3,'[$message [, $level]]'],	O=>0x0004 },
@@ -1388,7 +1391,7 @@ sub _new_sth {	# called by DBD::<drivername>::db::prepare)
 	    unless $class =~ /^DBD::(\w+)::(dr|db|st)$/;
 	my ($driver, $subtype) = ($1, $2);
 	Carp::croak("invalid method name '$method'")
-	    unless $method =~ m/^([a-z]+_)\w+$/;
+	    unless $method =~ m/^([a-z][a-z0-9]*_)\w+$/;
 	my $prefix = $1;
 	my $reg_info = $dbd_prefix_registry->{$prefix};
 	Carp::carp("method name prefix '$prefix' is not associated with a registered driver") unless $reg_info;
@@ -1635,9 +1638,9 @@ sub _new_sth {	# called by DBD::<drivername>::db::prepare)
     sub _do_selectrow {
 	my ($method, $dbh, $stmt, $attr, @bind) = @_;
 	my $sth = ((ref $stmt) ? $stmt : $dbh->prepare($stmt, $attr))
-	    or return;
+	    or return undef;
 	$sth->execute(@bind)
-	    or return;
+	    or return undef;
 	my $row = $sth->$method()
 	    and $sth->finish;
 	return $row;
@@ -2416,6 +2419,11 @@ C<:1>, C<:2>, and so on) in addition to C<?>, but their use is not portable.
 If the C<:>I<N> form of placeholder is supported by the driver you're using,
 then you should be able to use either L</bind_param> or L</execute> to bind
 values. Check your driver documentation.
+
+Some drivers allow you to prevent the recognition of a placeholder by placing a
+single backslash character (C<\>) immediately before it. The driver will remove
+the backslash character and ignore the placeholder, passing it unchanged to the
+backend. If the driver supports this then L</get_info>(9000) will return true.
 
 With most drivers, placeholders can't be used for any element of a
 statement that would prevent the database server from validating the
@@ -3689,8 +3697,8 @@ the destruction of inherited handles cause the corresponding handles in the
 parent process to cease working.
 
 Either the parent or the child process, but not both, should set
-C<InactiveDestroy> true on all their shared handles. Alternatively the
-L</AutoInactiveDestroy> can be set in the parent on connect.
+C<InactiveDestroy> true on all their shared handles. Alternatively, and
+preferably, the L</AutoInactiveDestroy> can be set in the parent on connect.
 
 To help tracing applications using fork the process id is shown in
 the trace log whenever a DBI or handle trace() method is called.
@@ -3703,12 +3711,15 @@ from the DBI's method dispatcher, e.g. >= 9.
 Type: boolean, inherited
 
 The L</InactiveDestroy> attribute, described above, needs to be explicitly set
-in the child process after a fork(). This is a problem if the code that performs
-the fork() is not under your control, perhaps in a third-party module.
-Use C<AutoInactiveDestroy> to get around this situation.
+in the child process after a fork(), on every active database and statement handle.
+This is a problem if the code that performs the fork() is not under your
+control, perhaps in a third-party module.  Use C<AutoInactiveDestroy> to get
+around this situation.
 
 If set true, the DESTROY method will check the process id of the handle and, if
 different from the current process id, it will set the I<InactiveDestroy> attribute.
+It is strongly recommended that C<AutoInactiveDestroy> is enabled on all new code
+(it's only not enabled by default to avoid backwards compatibility problems).
 
 This is the example it's designed to deal with:
 
@@ -4962,6 +4973,13 @@ of information types to ensure the DBI itself works properly:
    29  SQL_IDENTIFIER_QUOTE_CHAR   '`'           '"'
    41  SQL_CATALOG_NAME_SEPARATOR  '.'           '@'
   114  SQL_CATALOG_LOCATION        1             2
+
+Values from 9000 to 9999 for get_info are officially reserved for use by Perl DBI.
+Values in that range which have been assigned a meaning are defined here:
+
+C<9000>: true if a backslash character (C<\>) before placeholder-like text
+(e.g. C<?>, C<:foo>) will prevent it being treated as a placeholder by the driver.
+The backslash will be removed before the text is passed to the backend.
 
 =head3 C<table_info>
 
@@ -7078,7 +7096,7 @@ For example:
   my $sth2 = $dbh->prepare( $sth1->{Statement} );
   my $ParamValues = $sth1->{ParamValues} || {};
   my $ParamTypes  = $sth1->{ParamTypes}  || {};
-  $sth2->bind_param($_, $ParamValues->{$_} $ParamTypes->{$_})
+  $sth2->bind_param($_, $ParamValues->{$_}, $ParamTypes->{$_})
     for keys %{ {%$ParamValues, %$ParamTypes} };
   $sth2->execute();
 
